@@ -81,7 +81,7 @@ func udpCopyFromUpstream(downstream net.PacketConn, conn *udpConnection) {
 	}
 }
 
-func udpGetSocketFromMap(downstream net.PacketConn, downstreamAddr, saddr net.Addr, logger *zap.Logger,
+func udpGetSocketFromMap(downstream net.PacketConn, downstreamAddr, saddr, daddr net.Addr, logger *zap.Logger,
 	connMap map[string]*udpConnection, socketClosures chan<- string) (*udpConnection, error) {
 	connKey := ""
 	if saddr != nil {
@@ -94,7 +94,8 @@ func udpGetSocketFromMap(downstream net.PacketConn, downstreamAddr, saddr net.Ad
 
 	targetAddr := Opts.TargetAddr6
 	if AddrVersion(downstreamAddr) == 4 {
-		targetAddr = Opts.TargetAddr4
+		//targetAddr = Opts.TargetAddr4
+		targetAddr = daddr.String()
 	}
 
 	logger = logger.With(zap.String("downstreamAddr", downstreamAddr.String()), zap.String("targetAddr", targetAddr))
@@ -122,7 +123,7 @@ func udpGetSocketFromMap(downstream net.PacketConn, downstreamAddr, saddr net.Ad
 		udpConn.clientAddr = saddr.(*net.UDPAddr)
 	}
 
-	go udpCopyFromUpstream(downstream, udpConn)
+	//go udpCopyFromUpstream(downstream, udpConn)
 	go udpCloseAfterInactivity(udpConn, socketClosures)
 
 	connMap[connKey] = udpConn
@@ -158,7 +159,8 @@ func UDPListen(listenConfig *net.ListenConfig, logger *zap.Logger, errors chan<-
 			continue
 		}
 
-		saddr, _, restBytes, err := PROXYReadRemoteAddr(buffer[:n], UDP)
+		logger.Debug("Received packet with PROXY header", zap.Int("nbBytes", n), zap.Binary("payload", buffer[:n]))
+		saddr, daddr, restBytes, err := PROXYReadRemoteAddr(buffer[:n], UDP)
 		if err != nil {
 			logger.Debug("failed to parse PROXY header", zap.Error(err), zap.String("remoteAddr", remoteAddr.String()))
 			continue
@@ -177,11 +179,19 @@ func UDPListen(listenConfig *net.ListenConfig, logger *zap.Logger, errors chan<-
 			}
 		}
 
-		conn, err := udpGetSocketFromMap(ln, remoteAddr, saddr, logger, connectionMap, socketClosures)
+		// FIXME
+		// saddrr is not properly set in PROXY header, let's use the remote address for now
+		saddr = remoteAddr
+
+		conn, err := udpGetSocketFromMap(ln, remoteAddr, saddr, daddr, logger, connectionMap, socketClosures)
 		if err != nil {
 			continue
 		}
 
+		logger.Debug("Writing payload without PROXY header",
+			zap.String("src", conn.clientAddr.String()),
+			zap.String("dst", conn.upstream.RemoteAddr().String()),
+			zap.Binary("bytes", restBytes))
 		_, err = conn.upstream.Write(restBytes)
 		if err != nil {
 			conn.logger.Error("failed to write to upstream socket", zap.Error(err))
